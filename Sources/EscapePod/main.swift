@@ -2,7 +2,7 @@ import Foundation
 
 log(debug: "Lets get this party started...")
 
-DownloadQueue.shared.add(page: URL(string: "http://escapepod.org")!)
+DownloadQueue.shared.add(page: URL(string: "http://escapepod.org")!, initial: true)
 
 if DownloadQueue.shared.queue.operationCount > 0 {
 	DownloadQueue.shared.semaphore.wait()
