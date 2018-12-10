@@ -8,12 +8,14 @@
 import Foundation
 import SwiftSoup
 
+var downloadPath: Path = Path.userHome + "EscapePod"
+
 class DownloadQueue: NSObject {
 	static let shared = DownloadQueue()
 	
 	var semaphore: DispatchSemaphore = DispatchSemaphore(value: 0)
 	var count = 0
-  
+	
 	var queue: OperationQueue = {
 		let queue = OperationQueue()
 		queue.qualityOfService = .userInitiated
@@ -22,13 +24,18 @@ class DownloadQueue: NSObject {
 		return queue
 	}()
 	
-  func add(page: URL, initial: Bool = false) {
-    count += 1
-    queue.addOperation(PageOperation(url: page, initial: initial))
+	func add(page: URL, initial: Bool = false) {
+		count += 1
+		queue.addOperation(PageOperation(url: page, initial: initial))
 	}
 	
-	func completed(operation: PageOperation) {
-    count -= 1
+	func download(_ url: URL) {
+		count += 1
+		queue.addOperation(DownloadOperation(url: url))
+	}
+	
+	func completed(operation: Operation) {
+		count -= 1
 		DispatchQueue.global().async {
 			Thread.sleep(forTimeInterval: 1.0)
 			self.checkCompleted()
@@ -36,7 +43,7 @@ class DownloadQueue: NSObject {
 	}
 	
 	@objc func checkCompleted() {
-		log(debug: "Page count = \(count)")
+		log(debug: "\(count) remaining operations")
 		guard count == 0 else {
 			return
 		}
@@ -44,14 +51,19 @@ class DownloadQueue: NSObject {
 	}
 }
 
+struct MetaData: Codable {
+	var role: String
+	var value: String
+}
+
 class PageOperation: Operation {
 	
 	let url: URL
-  let initial: Bool
+	let initial: Bool
 	
-  init(url: URL, initial: Bool) {
+	init(url: URL, initial: Bool) {
 		self.url = url
-    self.initial = initial
+		self.initial = initial
 	}
 	
 	enum Error: Swift.Error {
@@ -63,10 +75,11 @@ class PageOperation: Operation {
 	override func main() {
 		guard !isCancelled else { return }
 		log(debug: "Download page from \(url)")
+		Thread.sleep(forTimeInterval: 5.0)
 		read(url: url, then: { (data) in
 			defer {
 				log(debug: "Completed processing \(self.url)")
-        Thread.sleep(forTimeInterval: 1.0)
+				Thread.sleep(forTimeInterval: 1.0)
 				DownloadQueue.shared.completed(operation: self)
 			}
 			log(debug: "Parse page result from \(self.url)")
@@ -76,60 +89,95 @@ class PageOperation: Operation {
 			}
 			do {
 				let doc: Document = try SwiftSoup.parse(text)
-        
-        guard let elements = try doc.body()?.select("div main div article div header") else {
-          return
-        }
-        for element in elements {
-          let linkElement = try element.select("h3 a")
-          let href = try linkElement.attr("href")
-          let text = try linkElement.text()
-//          log(debug: "\(text) @ \(href)")
-          
-          let metaElements = try element.select("div ul li")
-          for metaElement in metaElements {
-            let spanElement = try metaElement.select("span")
-            let anchorElement = try metaElement.select("a")
-            let role = try spanElement.text()
-            
-            let roleHref = try anchorElement.attr("href")
-            let roleText = try anchorElement.text()
-            
-//            log(debug: "role = \(role); \(roleText) @ \(roleHref)")
-          }
-        }
-        
-        guard self.initial else {
-          return
-        }
-        
-        guard let pageElements = try doc.body()?.select("div main div div a") else {
-          log(debug: "No more pages")
-          return
-        }
-        var maxPages = 0
-        for pageElement in pageElements {
-          guard try pageElement.attr("class") == "page-numbers" else {
-            continue
-          }
-          guard let page = Int(try pageElement.text()) else {
-            continue
-          }
-          maxPages = max(page, maxPages)
-        }
-        log(debug: "maxPages = \(maxPages)")
-        for page in 2...maxPages {
-          guard let url = URL(string: "/\(page)", relativeTo: self.url) else {
-            continue
-          }
-          DownloadQueue.shared.add(page: url)
-        }
+				
+				guard let elements = try doc.body()?.select("div main div article div header") else {
+					return
+				}
+				var count = 0
+				for element in elements {
+					let linkElement = try element.select("h3 a")
+					let text = try linkElement.text()
+					
+					let downloadElement = try element.select("div div p a.powerpress_link_d")
+					let href = try downloadElement.attr("href")
+					log(debug: "Download link = \(href)")
+					
+					count += 1
+					guard count < 2 else {
+						continue
+					}
+					guard let url = URL(string: href) else {
+						log(debug: "Bad URL \(href)")
+						continue
+					}
+					
+					DownloadQueue.shared.download(url)
+					
+					// Write this out as json
+					var metaData: [MetaData] = []
+					let metaElements = try element.select("div ul li")
+					for metaElement in metaElements {
+						let spanElement = try metaElement.select("span")
+						let anchorElement = try metaElement.select("a")
+						let role = try spanElement.text()
+						
+						//let roleHref = try anchorElement.attr("href")
+						let roleText = try anchorElement.text()
+						
+						guard !role.isEmpty else {
+							continue
+						}
+						metaData.append(MetaData(role: role, value: roleText))
+					}
+					
+					let name = url.deletingPathExtension().lastPathComponent + ".json"
+					let destPath = TextFile(path: downloadPath + name)
+
+					let encoder = JSONEncoder()
+					encoder.outputFormatting = .prettyPrinted
+
+					let data = try encoder.encode(metaData)
+					guard let metaText = String(data: data, encoding: .utf8) else {
+						log(error: "Could not convert meta data to text")
+						return
+					}
+					log(debug: "Write \(metaText)")
+					log(debug: "to \(destPath)")
+
+					try metaText |> destPath
+				}
+				
+				guard self.initial else {
+					return
+				}
+				
+				guard let pageElements = try doc.body()?.select("div main div div a") else {
+					log(debug: "No more pages")
+					return
+				}
+				var maxPages = 0
+				for pageElement in pageElements {
+					guard try pageElement.attr("class") == "page-numbers" else {
+						continue
+					}
+					guard let page = Int(try pageElement.text()) else {
+						continue
+					}
+					maxPages = max(page, maxPages)
+				}
+				log(debug: "maxPages = \(maxPages)")
+				for page in 2...maxPages {
+					guard let url = URL(string: "/\(page)", relativeTo: self.url) else {
+						continue
+					}
+					//          DownloadQueue.shared.add(page: url)
+				}
 			} catch let error {
 				log(error: error.localizedDescription)
 			}
 		}) { (error) in
 			log(error: error.localizedDescription)
-      Thread.sleep(forTimeInterval: 1.0)
+			Thread.sleep(forTimeInterval: 1.0)
 			DownloadQueue.shared.completed(operation: self)
 		}
 	}
@@ -166,4 +214,78 @@ class PageOperation: Operation {
 		task.resume()
 	}
 	
+}
+
+class DownloadOperation: Operation {
+	
+	enum Error: Swift.Error {
+		case unknownResponse
+		case badResponse(value: HTTPURLResponse)
+		case invalidSourceFile
+		case copyFailed(error: Swift.Error)
+		case couldNotCreateOutputPath(error: Swift.Error)
+	}
+	
+	let url: URL
+	
+	init(url: URL) {
+		self.url = url
+	}
+	
+	override func main() {
+		guard !isCancelled else {
+			return
+		}
+		Thread.sleep(forTimeInterval: 5)
+		download(then: {
+			DownloadQueue.shared.completed(operation: self)
+		}) { (error) in
+			log(error: error.localizedDescription)
+			DownloadQueue.shared.completed(operation: self)
+		}
+	}
+	
+	func download(then: @escaping () -> Void, fail: @escaping (Swift.Error) -> Void) {
+		
+		let sessionConfig = URLSessionConfiguration.default
+		let session = URLSession(configuration: sessionConfig)
+		
+		let request = URLRequest(url: url)
+		
+		let name = url.lastPathComponent
+		let destPath = downloadPath + name
+		
+		log(debug: "Download from \(url)")
+		let task = session.downloadTask(with: request) { (tempLocalUrl, response, error) in
+			if let error = error {
+				fail(error)
+				return
+			}
+			guard let status = response as? HTTPURLResponse else {
+				fail(Error.unknownResponse)
+				return
+			}
+			guard status.statusCode == 200 else {
+				fail(Error.badResponse(value: status))
+				return
+			}
+			guard let tempLocalUrl = tempLocalUrl, let tempFile = Path(url: tempLocalUrl) else {
+				fail(Error.invalidSourceFile)
+				return
+			}
+
+			do {
+				if destPath.exists {
+					try destPath.deleteFile()
+				}
+				
+				log(debug: "Move\n     \(tempFile.absolute)\n  to \(destPath.absolute)")
+				try tempFile.moveFile(to: destPath)
+				then()
+			} catch let error {
+				fail(Error.copyFailed(error: error))
+			}
+		}
+		task.resume()
+	}
 }
