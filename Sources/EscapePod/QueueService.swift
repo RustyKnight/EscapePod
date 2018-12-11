@@ -10,28 +10,36 @@ import SwiftSoup
 
 var downloadPath: Path = Path.userHome + "EscapePod"
 
-class DownloadQueue: NSObject {
-	static let shared = DownloadQueue()
+class QueueService: NSObject {
+	static let shared = QueueService()
 	
 	var semaphore: DispatchSemaphore = DispatchSemaphore(value: 0)
 	var count = 0
 	
-	var queue: OperationQueue = {
+	var pageQueue: OperationQueue = {
 		let queue = OperationQueue()
 		queue.qualityOfService = .userInitiated
 		queue.maxConcurrentOperationCount = 1
 		
 		return queue
 	}()
-	
+
+	var downloadQueue: OperationQueue = {
+		let queue = OperationQueue()
+		queue.qualityOfService = .userInitiated
+		queue.maxConcurrentOperationCount = 4
+		
+		return queue
+	}()
+
 	func add(page: URL, initial: Bool = false) {
 		count += 1
-		queue.addOperation(PageOperation(url: page, initial: initial))
+		pageQueue.addOperation(PageOperation(url: page, initial: initial))
 	}
 	
 	func download(_ url: URL) {
 		count += 1
-		queue.addOperation(DownloadOperation(url: url))
+		downloadQueue.addOperation(DownloadOperation(url: url))
 	}
 	
 	func completed(operation: Operation) {
@@ -80,7 +88,7 @@ class PageOperation: Operation {
 			defer {
 				log(debug: "Completed processing \(self.url)")
 				Thread.sleep(forTimeInterval: 1.0)
-				DownloadQueue.shared.completed(operation: self)
+				QueueService.shared.completed(operation: self)
 			}
 			log(debug: "Parse page result from \(self.url)")
 			guard let text = String(data: data, encoding: .utf8) else {
@@ -96,22 +104,17 @@ class PageOperation: Operation {
 				var count = 0
 				for element in elements {
 					let linkElement = try element.select("h3 a")
-					let text = try linkElement.text()
+					//let text = try linkElement.text()
 					
 					let downloadElement = try element.select("div div p a.powerpress_link_d")
 					let href = try downloadElement.attr("href")
-					log(debug: "Download link = \(href)")
 					
-					count += 1
-					guard count < 2 else {
-						continue
-					}
 					guard let url = URL(string: href) else {
 						log(debug: "Bad URL \(href)")
 						continue
 					}
 					
-					DownloadQueue.shared.download(url)
+					QueueService.shared.download(url)
 					
 					// Write this out as json
 					var metaData: [MetaData] = []
@@ -141,8 +144,8 @@ class PageOperation: Operation {
 						log(error: "Could not convert meta data to text")
 						return
 					}
-					log(debug: "Write \(metaText)")
-					log(debug: "to \(destPath)")
+//					log(debug: "Write \(metaText)")
+//					log(debug: "to \(destPath)")
 
 					try metaText |> destPath
 				}
@@ -170,7 +173,7 @@ class PageOperation: Operation {
 					guard let url = URL(string: "/\(page)", relativeTo: self.url) else {
 						continue
 					}
-					//          DownloadQueue.shared.add(page: url)
+			    QueueService.shared.add(page: url)
 				}
 			} catch let error {
 				log(error: error.localizedDescription)
@@ -178,7 +181,7 @@ class PageOperation: Operation {
 		}) { (error) in
 			log(error: error.localizedDescription)
 			Thread.sleep(forTimeInterval: 1.0)
-			DownloadQueue.shared.completed(operation: self)
+			QueueService.shared.completed(operation: self)
 		}
 	}
 	
@@ -189,7 +192,7 @@ class PageOperation: Operation {
 		request.httpMethod = "GET"
 		
 		let task = session.dataTask(with: request) { (data: Data?, response: URLResponse?, error: Swift.Error?) in
-			log(debug: "Download request for \(url) completed")
+			//log(debug: "Download request for \(url) completed")
 			if let error = error {
 				fail(error)
 				return
@@ -238,10 +241,10 @@ class DownloadOperation: Operation {
 		}
 		Thread.sleep(forTimeInterval: 5)
 		download(then: {
-			DownloadQueue.shared.completed(operation: self)
+			QueueService.shared.completed(operation: self)
 		}) { (error) in
 			log(error: error.localizedDescription)
-			DownloadQueue.shared.completed(operation: self)
+			QueueService.shared.completed(operation: self)
 		}
 	}
 	
@@ -279,8 +282,9 @@ class DownloadOperation: Operation {
 					try destPath.deleteFile()
 				}
 				
-				log(debug: "Move\n     \(tempFile.absolute)\n  to \(destPath.absolute)")
+//				log(debug: "Move\n     \(tempFile.absolute)\n  to \(destPath.absolute)")
 				try tempFile.moveFile(to: destPath)
+				log("\(self.url) downloaded to \(destPath.absolute)")
 				then()
 			} catch let error {
 				fail(Error.copyFailed(error: error))

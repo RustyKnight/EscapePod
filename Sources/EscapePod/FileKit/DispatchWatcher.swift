@@ -325,11 +325,11 @@ extension Path {
     /// - Parameter delegate: The delegate to call when events happen.
     /// - Parameter callback: The callback to be called on changes.
     public func watch(_ events: DispatchFileSystemEvents = .All,
-                      queue: DispatchQueue = DispatchQueue.global(qos: .default),
+                      pageQueue: DispatchQueue = DispatchQueue.global(qos: .default),
                       delegate: DispatchFileSystemWatcherDelegate? = nil,
                       callback: ((DispatchFileSystemWatcher) -> Void)? = nil
         ) -> DispatchFileSystemWatcher {
-        let watcher = DispatchFileSystemWatcher(path: self, events: events, queue: queue, callback: callback)
+        let watcher = DispatchFileSystemWatcher(path: self, events: events, pageQueue: pageQueue, callback: callback)
         watcher.delegate = delegate
         watcher.startWatching()
         return watcher

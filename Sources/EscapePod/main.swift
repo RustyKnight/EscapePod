@@ -8,10 +8,10 @@ do {
 		try downloadPath.createDirectory()
 	}
 
-	DownloadQueue.shared.add(page: URL(string: "http://escapepod.org")!, initial: true)
+	QueueService.shared.add(page: URL(string: "http://escapepod.org")!, initial: true)
 
-	if DownloadQueue.shared.queue.operationCount > 0 {
-		DownloadQueue.shared.semaphore.wait()
+	if QueueService.shared.pageQueue.operationCount > 0 {
+		QueueService.shared.semaphore.wait()
 	}
 
 	log(debug: "Party is done, everyone go home")
