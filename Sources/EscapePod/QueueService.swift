@@ -82,12 +82,13 @@ class PageOperation: Operation {
 	
 	override func main() {
 		guard !isCancelled else { return }
-		log(debug: "Download page from \(url)")
 		Thread.sleep(forTimeInterval: 5.0)
+		log("")
+		log(debug: "Download page from \(url)")
 		read(url: url, then: { (data) in
 			defer {
 				log(debug: "Completed processing \(self.url)")
-				Thread.sleep(forTimeInterval: 1.0)
+				log("")
 				QueueService.shared.completed(operation: self)
 			}
 			log(debug: "Parse page result from \(self.url)")
@@ -101,23 +102,26 @@ class PageOperation: Operation {
 				guard let elements = try doc.body()?.select("div main div article div header") else {
 					return
 				}
-				var count = 0
+				var downloaded: [String] = []
+				var ignored: [String] = []
 				for element in elements {
 					let linkElement = try element.select("h3 a")
-					//let text = try linkElement.text()
+					let text = try linkElement.text()
 					
 					let downloadElement = try element.select("div div p a.powerpress_link_d")
 					let href = try downloadElement.attr("href")
 					
 					guard let url = URL(string: href) else {
-						log(debug: "Bad URL \(href)")
+						ignored.append(text)
 						continue
 					}
+					downloaded.append(text)
 					
-					QueueService.shared.download(url)
+					//QueueService.shared.download(url)
 					
 					// Write this out as json
 					var metaData: [MetaData] = []
+					metaData.append(MetaData(role: "title", value: text))
 					let metaElements = try element.select("div ul li")
 					for metaElement in metaElements {
 						let spanElement = try metaElement.select("span")
@@ -150,6 +154,13 @@ class PageOperation: Operation {
 					try metaText |> destPath
 				}
 				
+				for download in downloaded {
+					log("Download \(download)")
+				}
+				for ignore in ignored {
+					log(warning: "Ignored \(ignore)")
+				}
+
 				guard self.initial else {
 					return
 				}
@@ -170,7 +181,7 @@ class PageOperation: Operation {
 				}
 				log(debug: "maxPages = \(maxPages)")
 				for page in 2...maxPages {
-					guard let url = URL(string: "/\(page)", relativeTo: self.url) else {
+					guard let url = URL(string: "/page/\(page)", relativeTo: self.url) else {
 						continue
 					}
 			    QueueService.shared.add(page: url)
