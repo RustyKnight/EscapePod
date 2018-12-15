@@ -68,7 +68,9 @@ class PageOperation: Operation {
 	
 	let url: URL
 	let initial: Bool
-	
+
+  let semaphore: DispatchSemaphore = DispatchSemaphore(value: 0)
+
 	init(url: URL, initial: Bool) {
 		self.url = url
 		self.initial = initial
@@ -84,11 +86,12 @@ class PageOperation: Operation {
 		guard !isCancelled else { return }
 		Thread.sleep(forTimeInterval: 5.0)
 		log("")
-		log(debug: "Download page from \(url)")
+		log("Begin parsing page from \(url)")
 		read(url: url, then: { (data) in
 			defer {
-				log(debug: "Completed processing \(self.url)")
+				log("Completed processing \(self.url)")
 				log("")
+        self.semaphore.signal()
 				QueueService.shared.completed(operation: self)
 			}
 			log(debug: "Parse page result from \(self.url)")
@@ -102,7 +105,7 @@ class PageOperation: Operation {
 				guard let elements = try doc.body()?.select("div main div article div header") else {
 					return
 				}
-				var downloaded: [String] = []
+        var downloaded: [String: URL] = [:]
 				var ignored: [String] = []
 				for element in elements {
 					let linkElement = try element.select("h3 a")
@@ -115,55 +118,56 @@ class PageOperation: Operation {
 						ignored.append(text)
 						continue
 					}
-					downloaded.append(text)
-					
-					//QueueService.shared.download(url)
-					
+					downloaded[text] = url
+
+          let postDateTimeElement = try element.parent()?.parent()?.select("ul.excerpt_meta li a.post_date_time span.published")
+          let postDateTime = try postDateTimeElement?.attr("content")
+
 					// Write this out as json
-					var metaData: [MetaData] = []
-					metaData.append(MetaData(role: "title", value: text))
-					let metaElements = try element.select("div ul li")
-					for metaElement in metaElements {
-						let spanElement = try metaElement.select("span")
-						let anchorElement = try metaElement.select("a")
-						let role = try spanElement.text()
-						
-						//let roleHref = try anchorElement.attr("href")
-						let roleText = try anchorElement.text()
-						
-						guard !role.isEmpty else {
-							continue
-						}
-						metaData.append(MetaData(role: role, value: roleText))
-					}
-					
-					let name = url.deletingPathExtension().lastPathComponent + ".json"
-					let destPath = TextFile(path: downloadPath + name)
+          var metaData: [MetaData] = []
+          metaData.append(MetaData(role: "title", value: text))
+          metaData.append(MetaData(role: "publishDate", value: postDateTime ?? ""))
 
-					let encoder = JSONEncoder()
-					encoder.outputFormatting = .prettyPrinted
+          let metaElements = try element.select("div ul li")
+          for metaElement in metaElements {
+            let spanElement = try metaElement.select("span")
+            let anchorElement = try metaElement.select("a")
+            let role = try spanElement.text()
 
-					let data = try encoder.encode(metaData)
-					guard let metaText = String(data: data, encoding: .utf8) else {
-						log(error: "Could not convert meta data to text")
-						return
-					}
-//					log(debug: "Write \(metaText)")
-//					log(debug: "to \(destPath)")
+            //let roleHref = try anchorElement.attr("href")
+            let roleText = try anchorElement.text()
 
-					try metaText |> destPath
-				}
+            guard !role.isEmpty else {
+              continue
+            }
+            metaData.append(MetaData(role: role, value: roleText))
+          }
+
+          let name = url.deletingPathExtension().lastPathComponent + ".json"
+          let destPath = TextFile(path: downloadPath + name)
+
+          let encoder = JSONEncoder()
+          encoder.outputFormatting = .prettyPrinted
+
+          let data = try encoder.encode(metaData)
+          guard let metaText = String(data: data, encoding: .utf8) else {
+            log(error: "Could not convert meta data to text")
+            return
+          }
+
+          try metaText |> destPath
+        }
 				
-				for download in downloaded {
-					log("Download \(download)")
-				}
-				for ignore in ignored {
-					log(warning: "Ignored \(ignore)")
-				}
-
-				guard self.initial else {
-					return
-				}
+        for (key, value) in downloaded {
+          log("Download \(key)")
+          QueueService.shared.download(value)
+        }
+        for ignore in ignored {
+          log(warning: "Ignored \(ignore)")
+        }
+        guard self.initial else {
+          return
+        }
 				
 				guard let pageElements = try doc.body()?.select("div main div div a") else {
 					log(debug: "No more pages")
@@ -192,8 +196,11 @@ class PageOperation: Operation {
 		}) { (error) in
 			log(error: error.localizedDescription)
 			Thread.sleep(forTimeInterval: 1.0)
+      self.semaphore.signal()
 			QueueService.shared.completed(operation: self)
 		}
+    
+    semaphore.wait()
 	}
 	
 	func read(url: URL, then: @escaping (Data) -> Void, fail: @escaping (Swift.Error) -> Void) {
@@ -202,6 +209,7 @@ class PageOperation: Operation {
 		var request = URLRequest(url: url)
 		request.httpMethod = "GET"
 		
+    log(debug: "Downloading page from \(url)")
 		let task = session.dataTask(with: request) { (data: Data?, response: URLResponse?, error: Swift.Error?) in
 			//log(debug: "Download request for \(url) completed")
 			if let error = error {
@@ -241,7 +249,9 @@ class DownloadOperation: Operation {
 	}
 	
 	let url: URL
-	
+
+  let semaphore: DispatchSemaphore = DispatchSemaphore(value: 0)
+
 	init(url: URL) {
 		self.url = url
 	}
@@ -252,11 +262,16 @@ class DownloadOperation: Operation {
 		}
 		Thread.sleep(forTimeInterval: 5)
 		download(then: {
+      log("Completed download task for \(self.url)")
 			QueueService.shared.completed(operation: self)
+      self.semaphore.signal()
 		}) { (error) in
 			log(error: error.localizedDescription)
 			QueueService.shared.completed(operation: self)
+      self.semaphore.signal()
 		}
+    
+    semaphore.wait()
 	}
 	
 	func download(then: @escaping () -> Void, fail: @escaping (Swift.Error) -> Void) {
@@ -268,9 +283,16 @@ class DownloadOperation: Operation {
 		
 		let name = url.lastPathComponent
 		let destPath = downloadPath + name
+    
+    guard !destPath.exists else {
+      log(warning: "Download already exists for \(url)")
+      then()
+      return
+    }
 		
 		log(debug: "Download from \(url)")
 		let task = session.downloadTask(with: request) { (tempLocalUrl, response, error) in
+      log(debug: "Download from \(self.url) completed")
 			if let error = error {
 				fail(error)
 				return
@@ -295,7 +317,7 @@ class DownloadOperation: Operation {
 				
 //				log(debug: "Move\n     \(tempFile.absolute)\n  to \(destPath.absolute)")
 				try tempFile.moveFile(to: destPath)
-				log("\(self.url) downloaded to \(destPath.absolute)")
+				log("Downloaded \(self.url)\n             to \(destPath.absolute)")
 				then()
 			} catch let error {
 				fail(Error.copyFailed(error: error))

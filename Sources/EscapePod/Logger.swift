@@ -17,7 +17,7 @@ public func log(_ values: String...) {
 public func log(error: String...) {
 	var values: [String] = []
 	values.append(contentsOf: error)
-	values.insert("*** ".red, at: 0)
+	values.insert("!!! ".red, at: 0)
 	print(values.joined(separator: " "))
 }
 
@@ -30,7 +30,9 @@ public func log(warning: String...) {
 
 public func log(debug: String...) {
 	var values: [String] = []
-	values.append(contentsOf: debug)
+  for text in debug {
+    values.append(text.lightBlack)
+  }
 	values.insert("*** ".lightBlack, at: 0)
 	print(values.joined(separator: " "))
 }
